@@ -1,0 +1,11 @@
+[package]
+name = "slide"
+version = "0.1.0"
+edition = "2024"
+
+[dev-dependencies]
+quickcheck = "1.0.3"
+quickcheck_macros = "1.1.0"
+
+[dependencies]
+smallvec = "1.15.1"
