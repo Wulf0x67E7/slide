@@ -127,6 +127,11 @@ impl<T: Copy + Eq + Hash, const N: usize> SearchBuffer<T, N> {
         (max.len() >= N).then_some(max)
     }
     pub fn extend_from_within(&mut self, mut index: Range<usize>) {
+        assert!(
+            index.start >= self.start() && index.start < self.end(),
+            "The value of index.start ({index:?}) is out of bounds of the SearchBuffer ({range:?})",
+            range = self.range()
+        );
         while !index.is_empty() {
             let _index = index.start..index.end.min(self.end());
             index.end -= _index.len();
