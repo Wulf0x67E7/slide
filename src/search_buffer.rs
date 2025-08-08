@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     hash::Hash,
-    iter::repeat_n,
     ops::{Index, Range},
 };
 
@@ -34,17 +33,8 @@ impl<T: Copy + Eq + Hash, const N: usize> FromIterator<T> for SearchBuffer<T, N>
 }
 impl<T: Copy + Eq + Hash, const N: usize> Extend<T> for SearchBuffer<T, N> {
     fn extend<Iter: IntoIterator<Item = T>>(&mut self, iter: Iter) {
-        let mut base = self.len().saturating_sub(N - 1);
-        let mut n = 0;
-        self.values.extend(iter.into_iter().inspect(|_| n += 1));
-        self.offsets.extend(repeat_n(0, n));
-        while let Some(window) = self.values[base..].first_chunk_mut::<N>().copied() {
-            self.offsets[base] = self
-                .heads
-                .insert(window, base + self.offset)
-                .unwrap_or_default();
-            base += 1;
-        }
+        self.values.extend(iter);
+        self.extend_offsets();
     }
 }
 
@@ -53,7 +43,10 @@ impl<T: Copy + Eq + Hash, const N: usize> SearchBuffer<T, N> {
         Self::default()
     }
     pub fn len(&self) -> usize {
-        debug_assert_eq!(self.values.len(), self.offsets.len());
+        debug_assert_eq!(
+            self.values.len().saturating_sub(N.saturating_sub(1)),
+            self.offsets.len()
+        );
         self.values.len()
     }
     pub fn start(&self) -> usize {
@@ -65,6 +58,24 @@ impl<T: Copy + Eq + Hash, const N: usize> SearchBuffer<T, N> {
     pub fn range(&self) -> Range<usize> {
         self.start()..self.end()
     }
+    pub fn push(&mut self, val: T) {
+        self.values.push(val);
+        self.extend_offsets();
+    }
+    pub fn pop(&mut self) -> Option<T> {
+        self.values.pop().inspect(|_| {
+            self.offsets.pop().unwrap();
+            self.offset += 1
+        })
+    }
+    pub fn step(&mut self, val: T) -> T {
+        if let Some(ret) = self.pop() {
+            self.push(val);
+            ret
+        } else {
+            val
+        }
+    }
     pub fn drain(
         &mut self,
         n: usize,
@@ -73,6 +84,21 @@ impl<T: Copy + Eq + Hash, const N: usize> SearchBuffer<T, N> {
         self.offsets.drain(0..ret.len()).for_each(drop);
         self.offset += ret.len();
         ret
+    }
+    pub fn slide(&mut self, iter: impl IntoIterator<Item = T>) -> impl Iterator<Item = T> {
+        iter.into_iter().map(|val| self.step(val))
+    }
+    fn extend_offsets(&mut self) {
+        while let base = self.offsets.len()
+            && base < self.values.len()
+            && let Some(window) = self.values[base..].first_chunk_mut::<N>().copied()
+        {
+            self.offsets.push(
+                self.heads
+                    .insert(window, base + self.offset)
+                    .unwrap_or_default(),
+            );
+        }
     }
     fn get_match<const SKIP_N: bool>(&self, base: usize, arr: &[T]) -> Range<usize> {
         let skip = if SKIP_N {
@@ -126,9 +152,12 @@ impl<T: Copy + Eq + Hash, const N: usize> SearchBuffer<T, N> {
         debug_assert!(max.len() <= arr.len());
         (max.len() >= N).then_some(max)
     }
+    pub fn push_from_within(&mut self, index: usize) {
+        self.push(self[index]);
+    }
     pub fn extend_from_within(&mut self, mut index: Range<usize>) {
         assert!(
-            index.start >= self.start() && index.start < self.end(),
+            self.range().contains(&index.start),
             "The value of index.start ({index:?}) is out of bounds of the SearchBuffer ({range:?})",
             range = self.range()
         );
@@ -139,6 +168,17 @@ impl<T: Copy + Eq + Hash, const N: usize> SearchBuffer<T, N> {
                 self[_index].iter().copied(),
             ));
         }
+    }
+    pub fn step_from_within(&mut self, index: usize) -> T {
+        self.step(self[index])
+    }
+    pub fn slide_from_within(&mut self, index: Range<usize>) -> impl Iterator<Item = T> {
+        assert!(
+            self.range().contains(&index.start),
+            "The value of index.start ({index:?}) is out of bounds of the SearchBuffer ({range:?})",
+            range = self.range()
+        );
+        index.into_iter().map(|index| self.step_from_within(index))
     }
 }
 
@@ -174,14 +214,14 @@ mod tests {
         let mut sb: SearchBuffer<char, 2> = SearchBuffer::default();
         sb.extend(['a', 'b', 'c']);
         assert_eq!(&*sb.values, ['a', 'b', 'c']);
-        assert_eq!(&*sb.offsets, [0, 0, 0]);
+        assert_eq!(&*sb.offsets, [0, 0]);
         assert_eq!(
             &sb.heads,
             &HashMap::from_iter([(['a', 'b'], 1), (['b', 'c'], 2),])
         );
         sb.extend_from_within(0..2);
         assert_eq!(&*sb.values, ['a', 'b', 'c', 'a', 'b']);
-        assert_eq!(&*sb.offsets, [0, 0, 0, 1, 0]);
+        assert_eq!(&*sb.offsets, [0, 0, 0, 1]);
         assert_eq!(
             &sb.heads,
             &HashMap::from_iter([(['a', 'b'], 4), (['b', 'c'], 2), (['c', 'a'], 3)])

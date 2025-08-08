@@ -71,6 +71,14 @@ impl<T> Slide<T> {
             unsafe { Some(replace(&mut self.data[idx], MaybeUninit::uninit()).assume_init()) }
         }
     }
+    pub fn step(&mut self, val: T) -> T {
+        if let Some(ret) = self.pop() {
+            self.push(val);
+            ret
+        } else {
+            val
+        }
+    }
     pub fn remove(&mut self, idx: usize) -> Option<T> {
         let len = self.len();
         if idx < len {
@@ -91,21 +99,10 @@ impl<T> Slide<T> {
     pub fn clear(&mut self) {
         self.drain(0..self.len()).for_each(drop);
     }
-    pub fn extend(&mut self, source: impl IntoIterator<Item = T>) {
-        let source = source.into_iter();
-        self.ensure_capacity(self.len() + source.size_hint().0);
-        for val in source {
-            if self.tail_capacity() == 0 {
-                self.ensure_capacity(self.len() + 1);
-            }
-            self.data[self.end] = MaybeUninit::new(val);
-            self.end += 1;
-        }
-    }
     pub fn drain(
         &mut self,
         mut range: Range<usize>,
-    ) -> impl '_ + ExactSizeIterator<Item = T> + DoubleEndedIterator<Item = T> {
+    ) -> impl ExactSizeIterator<Item = T> + DoubleEndedIterator<Item = T> {
         let len = self.len();
         assert!(
             range.start <= range.end && range.end <= len,
@@ -135,6 +132,9 @@ impl<T> Slide<T> {
             .iter_mut()
             .map(|x| unsafe { replace(x, MaybeUninit::uninit()).assume_init() })
     }
+    pub fn slide(&mut self, iter: impl IntoIterator<Item = T>) -> impl Iterator<Item = T> {
+        iter.into_iter().map(|val| self.step(val))
+    }
     fn ensure_capacity(&mut self, new_capacity: usize) {
         let len = self.len();
         let new_capacity = new_capacity.max(len);
@@ -157,6 +157,19 @@ impl<T> Slide<T> {
             }
             self.start = 0;
             self.end = len;
+        }
+    }
+}
+impl<T> Extend<T> for Slide<T> {
+    fn extend<Iter: IntoIterator<Item = T>>(&mut self, iter: Iter) {
+        let source = iter.into_iter();
+        self.ensure_capacity(self.len() + source.size_hint().0);
+        for val in source {
+            if self.tail_capacity() == 0 {
+                self.ensure_capacity(self.len() + 1);
+            }
+            self.data[self.end] = MaybeUninit::new(val);
+            self.end += 1;
         }
     }
 }
@@ -187,9 +200,9 @@ impl<T: std::fmt::Debug> std::fmt::Debug for Slide<T> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use super::*;
     use quickcheck_macros::quickcheck;
 
-    use super::*;
     #[test]
     fn default() {
         let mut slide = Slide::<()>::new();

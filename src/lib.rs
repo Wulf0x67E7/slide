@@ -1,5 +1,6 @@
 mod slide;
 pub use slide::*;
+pub mod lz;
 pub mod search_buffer;
 
 #[cfg(test)]
