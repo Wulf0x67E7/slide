@@ -42,6 +42,9 @@ impl<T: Copy + Eq + Hash, const N: usize> SearchBuffer<T, N> {
     pub fn new() -> Self {
         Self::default()
     }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     pub fn len(&self) -> usize {
         debug_assert_eq!(
             self.values.len().saturating_sub(N.saturating_sub(1)),
@@ -81,7 +84,9 @@ impl<T: Copy + Eq + Hash, const N: usize> SearchBuffer<T, N> {
         n: usize,
     ) -> impl ExactSizeIterator<Item = T> + DoubleEndedIterator<Item = T> {
         let ret = self.values.drain(0..n);
-        self.offsets.drain(0..ret.len()).for_each(drop);
+        self.offsets
+            .drain(0..ret.len().min(self.offsets.len()))
+            .for_each(drop);
         self.offset += ret.len();
         ret
     }
@@ -214,6 +219,9 @@ impl<T: Copy + Eq + Hash, const N: usize> SearchBuffer<T, N> {
             range = self.range()
         );
         index.into_iter().map(|index| self.step_from_within(index))
+    }
+    pub fn to_values(self) -> Box<[T]> {
+        self.values.to_vec().into_boxed_slice()
     }
 }
 

@@ -67,8 +67,20 @@ where
         Self::Ref(value)
     }
 }
+impl<'a, T> Item<'a, T>
+where
+    [T]: ToOwned,
+    <[T] as ToOwned>::Owned: Debug,
+{
+    fn len(&self) -> usize {
+        match self {
+            Item::Raw(cow) => cow.len(),
+            Item::Ref(range) => range.len(),
+        }
+    }
+}
 
-pub fn find_back_refs<T: Debug + Copy + Eq + Hash, const N: usize>(
+pub fn to_back_refs<T: Debug + Copy + Eq + Hash, const N: usize>(
     mut data: &[T],
     config: Config,
 ) -> impl Iterator<Item = Item<'_, T>>
@@ -115,22 +127,37 @@ where
     })
 }
 
-//pub fn from_back_refs<'a, T: 'a + Debug + Copy + Eq + Hash, const N: usize>(
-//    mut items: impl IntoIterator<Item = Item<'a, T>>,
-//    config: Config,
-//) -> impl Iterator<Item = T> {
-//    let mut search_buffer = SearchBuffer::<T, N>::new();
-//    items.into_iter().flat_map(|item| {})
-//}
+pub fn from_back_refs<'a, T: 'a + Debug + Copy + Eq + Hash, const N: usize>(
+    items: impl IntoIterator<Item = Item<'a, T>>,
+    config: Config,
+) -> impl Iterator<Item = T> {
+    let mut search_buffer = SearchBuffer::<T, N>::new();
+    items.into_iter().flat_map(move |item| {
+        let len = item.len();
+        match item {
+            Item::Raw(raw) => {
+                search_buffer
+                    .extend_slide(raw.into_owned(), config.max_buffer_len)
+                    .for_each(drop);
+            }
+            Item::Ref(index) => {
+                search_buffer
+                    .extend_slide_from_within(index, config.max_buffer_len)
+                    .for_each(drop);
+            }
+        };
+        search_buffer[search_buffer.end() - len..search_buffer.end()].to_owned()
+    })
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn find_back_refs() {
+    fn to_back_refs() {
         let data = b"vwabcdeabcabcabcxvw";
-        let refs = super::find_back_refs::<_, 2>(
+        let items = super::to_back_refs::<_, 2>(
             data,
             Config {
                 max_buffer_len: 8,
@@ -140,7 +167,7 @@ mod tests {
         .take(5)
         .collect::<Vec<_>>();
         assert_eq!(
-            refs,
+            items,
             vec![
                 Item::from(b"vwabcde"),
                 Item::from(2..5),
@@ -148,5 +175,23 @@ mod tests {
                 Item::from(b"xvw")
             ]
         );
+    }
+    #[test]
+    fn from_back_refs() {
+        let items = [
+            Item::from(b"vwabcde"),
+            Item::from(2..5),
+            Item::from(7..13),
+            Item::from(b"xvw"),
+        ];
+        let data = super::from_back_refs::<_, 2>(
+            items,
+            Config {
+                max_buffer_len: 8,
+                match_lengths: 0..usize::MAX,
+            },
+        )
+        .collect::<Box<[_]>>();
+        assert_eq!(data.iter().as_slice(), b"vwabcdeabcabcabcxvw".as_slice());
     }
 }
