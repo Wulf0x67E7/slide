@@ -31,6 +31,24 @@ where
     Raw(Cow<'a, [T]>),
     Ref(Range<usize>),
 }
+impl<T, const N: usize> From<[T; N]> for Item<'static, T>
+where
+    [T]: ToOwned,
+    <[T] as ToOwned>::Owned: Debug,
+{
+    fn from(value: [T; N]) -> Self {
+        Self::Raw(Cow::Owned(value.to_owned()))
+    }
+}
+impl<'a, T, const N: usize> From<&'a [T; N]> for Item<'a, T>
+where
+    [T]: ToOwned,
+    <[T] as ToOwned>::Owned: Debug,
+{
+    fn from(value: &'a [T; N]) -> Self {
+        Self::Raw(Cow::Borrowed(value))
+    }
+}
 impl<'a, T> From<&'a [T]> for Item<'a, T>
 where
     [T]: ToOwned,
@@ -63,8 +81,9 @@ where
     let mut back_ref: Option<Range<usize>> = None;
     iter::from_fn(move || {
         loop {
+            // Return items already found in previous call/iteration.
             if raw_len > 0 {
-                let item = Item::Raw(Cow::Borrowed(&data[..raw_len]));
+                let item = Item::from(&data[..raw_len]);
                 data = &data[raw_len..];
                 raw_len = 0;
                 return Some(item);
@@ -74,24 +93,21 @@ where
             } else if data.is_empty() {
                 return None;
             }
+            // Keep pushing/sliding in values popped of data until valid match is found.
             while let data @ [head, ..] = data[raw_len..].get_clamped(0..config.match_lengths.end) {
                 if let Some(range) = search_buffer.find_longest_match(data)
                     && range.len() >= config.match_lengths.start
                 {
-                    let spare_len = config.max_buffer_len - search_buffer.len();
-                    let mid = range.end.min(range.start + spare_len);
-                    search_buffer.extend_from_within(range.start..mid);
                     search_buffer
-                        .slide_from_within(mid..range.end)
+                        .extend_slide(
+                            data[..range.len()].into_iter().copied(),
+                            config.max_buffer_len,
+                        )
                         .for_each(drop);
                     back_ref = Some(range);
                     break;
                 } else {
-                    if search_buffer.len() < config.max_buffer_len {
-                        search_buffer.push(*head);
-                    } else {
-                        search_buffer.step(*head);
-                    }
+                    search_buffer.push_step(*head, config.max_buffer_len);
                     raw_len += 1;
                 }
             }
@@ -99,11 +115,12 @@ where
     })
 }
 
-//pub fn from_back_refs<T: Copy + Eq + Hash, const N: usize>(
-//    mut data: &[T],
+//pub fn from_back_refs<'a, T: 'a + Debug + Copy + Eq + Hash, const N: usize>(
+//    mut items: impl IntoIterator<Item = Item<'a, T>>,
 //    config: Config,
-//) -> impl Iterator<Item = (usize, Range<usize>)> {
-//    todo!()
+//) -> impl Iterator<Item = T> {
+//    let mut search_buffer = SearchBuffer::<T, N>::new();
+//    items.into_iter().flat_map(|item| {})
 //}
 
 #[cfg(test)]
@@ -120,16 +137,15 @@ mod tests {
                 match_lengths: 0..usize::MAX,
             },
         )
-        .inspect(|item| println!("{item:?}"))
-        .take(10)
+        .take(5)
         .collect::<Vec<_>>();
         assert_eq!(
             refs,
             vec![
-                Item::from(b"vwabcde".as_slice()),
+                Item::from(b"vwabcde"),
                 Item::from(2..5),
                 Item::from(7..13),
-                Item::from(b"xvw".as_slice())
+                Item::from(b"xvw")
             ]
         );
     }

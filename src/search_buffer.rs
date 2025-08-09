@@ -88,6 +88,41 @@ impl<T: Copy + Eq + Hash, const N: usize> SearchBuffer<T, N> {
     pub fn slide(&mut self, iter: impl IntoIterator<Item = T>) -> impl Iterator<Item = T> {
         iter.into_iter().map(|val| self.step(val))
     }
+    pub fn push_step(&mut self, val: T, max_len: usize) -> Option<T> {
+        if self.len() < max_len {
+            self.push(val);
+            None
+        } else {
+            Some(self.step(val))
+        }
+    }
+    pub fn push_step_from_within(&mut self, index: usize, max_len: usize) -> Option<T> {
+        self.push_step(self[index], max_len)
+    }
+    pub fn extend_slide(
+        &mut self,
+        iter: impl IntoIterator<Item = T>,
+        max_len: usize,
+    ) -> impl Iterator<Item = T> {
+        let mut iter = iter.into_iter();
+        if self.len() < max_len {
+            self.extend((&mut iter).take(max_len - self.len()));
+        }
+        self.slide(iter)
+    }
+    pub fn extend_slide_from_within(
+        &mut self,
+        mut index: Range<usize>,
+        max_len: usize,
+    ) -> impl Iterator<Item = T> {
+        let spare_len = self.len().saturating_sub(max_len);
+        if spare_len > 0 {
+            let start = index.start;
+            index.start = index.end.min(index.start + spare_len);
+            self.extend_from_within(start..index.start);
+        }
+        self.slide_from_within(index)
+    }
     fn extend_offsets(&mut self) {
         while let base = self.offsets.len()
             && base < self.values.len()
