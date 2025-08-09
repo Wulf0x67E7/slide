@@ -1,5 +1,5 @@
-use crate::search_buffer::SearchBuffer;
-use std::{hash::Hash, ops::Range};
+use crate::{search_buffer::SearchBuffer, util::SliceExt as _};
+use std::{borrow::Cow, fmt::Debug, hash::Hash, iter, ops::Range};
 
 #[derive(Debug)]
 pub struct Config {
@@ -22,46 +22,89 @@ impl Default for Config {
     }
 }
 
-pub fn find_back_refs<T: Copy + Eq + Hash, const N: usize>(
+#[derive(Debug, PartialEq, Eq)]
+pub enum Item<'a, T>
+where
+    [T]: ToOwned,
+    <[T] as ToOwned>::Owned: Debug,
+{
+    Raw(Cow<'a, [T]>),
+    Ref(Range<usize>),
+}
+impl<'a, T> From<&'a [T]> for Item<'a, T>
+where
+    [T]: ToOwned,
+    <[T] as ToOwned>::Owned: Debug,
+{
+    fn from(value: &'a [T]) -> Self {
+        Self::Raw(Cow::Borrowed(value))
+    }
+}
+impl<'a, T> From<Range<usize>> for Item<'a, T>
+where
+    [T]: ToOwned,
+    <[T] as ToOwned>::Owned: Debug,
+{
+    fn from(value: Range<usize>) -> Self {
+        Self::Ref(value)
+    }
+}
+
+pub fn find_back_refs<T: Debug + Copy + Eq + Hash, const N: usize>(
     mut data: &[T],
     config: Config,
-) -> impl Iterator<Item = (usize, Range<usize>)> {
+) -> impl Iterator<Item = Item<'_, T>>
+where
+    [T]: ToOwned,
+    <[T] as ToOwned>::Owned: Debug,
+{
     let mut search_buffer = SearchBuffer::<T, N>::new();
-    std::iter::from_fn(move || {
-        let mut skipped = 0;
-        let range = loop {
-            if data.is_empty() {
-                if skipped == 0 {
-                    return None;
-                } else {
-                    break search_buffer.end()..search_buffer.end();
-                }
-            } else if let Some(range) =
-                search_buffer.find_longest_match(&data[..data.len().min(config.match_lengths.end)])
-                && range.len() >= config.match_lengths.start
-            {
-                let spare_len = config.max_buffer_len - search_buffer.len();
-                let mid = range.end.min(range.start + spare_len);
-                search_buffer.extend_from_within(range.start..mid);
-                search_buffer
-                    .slide_from_within(mid..range.end)
-                    .for_each(drop);
-
-                data = &data[range.len()..];
-                break range;
-            } else {
-                skipped += 1;
-                if search_buffer.len() < config.max_buffer_len {
-                    search_buffer.push(data[0]);
-                } else {
-                    search_buffer.step(data[0]);
-                }
-                data = &data[1..];
+    let mut raw_len: usize = 0;
+    let mut back_ref: Option<Range<usize>> = None;
+    iter::from_fn(move || {
+        loop {
+            if raw_len > 0 {
+                let item = Item::Raw(Cow::Borrowed(&data[..raw_len]));
+                data = &data[raw_len..];
+                raw_len = 0;
+                return Some(item);
+            } else if let Some(back_ref) = back_ref.take() {
+                data = &data[back_ref.len()..];
+                return Some(Item::from(back_ref));
+            } else if data.is_empty() {
+                return None;
             }
-        };
-        Some((skipped, range))
+            while let data @ [head, ..] = data[raw_len..].get_clamped(0..config.match_lengths.end) {
+                if let Some(range) = search_buffer.find_longest_match(data)
+                    && range.len() >= config.match_lengths.start
+                {
+                    let spare_len = config.max_buffer_len - search_buffer.len();
+                    let mid = range.end.min(range.start + spare_len);
+                    search_buffer.extend_from_within(range.start..mid);
+                    search_buffer
+                        .slide_from_within(mid..range.end)
+                        .for_each(drop);
+                    back_ref = Some(range);
+                    break;
+                } else {
+                    if search_buffer.len() < config.max_buffer_len {
+                        search_buffer.push(*head);
+                    } else {
+                        search_buffer.step(*head);
+                    }
+                    raw_len += 1;
+                }
+            }
+        }
     })
 }
+
+//pub fn from_back_refs<T: Copy + Eq + Hash, const N: usize>(
+//    mut data: &[T],
+//    config: Config,
+//) -> impl Iterator<Item = (usize, Range<usize>)> {
+//    todo!()
+//}
 
 #[cfg(test)]
 mod tests {
@@ -77,7 +120,17 @@ mod tests {
                 match_lengths: 0..usize::MAX,
             },
         )
+        .inspect(|item| println!("{item:?}"))
+        .take(10)
         .collect::<Vec<_>>();
-        assert_eq!(refs, vec![(7, 2..5), (0, 7..13), (3, 19..19)]);
+        assert_eq!(
+            refs,
+            vec![
+                Item::from(b"vwabcde".as_slice()),
+                Item::from(2..5),
+                Item::from(7..13),
+                Item::from(b"xvw".as_slice())
+            ]
+        );
     }
 }
