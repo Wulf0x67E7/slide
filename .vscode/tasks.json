@@ -30,6 +30,18 @@
 			],
 			"group": "build",
 			"label": "rust: cargo run --release"
+		},
+		{
+			"type": "cargo",
+			"command": "flamegraph",
+			"args": [
+				"--open"
+			],
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build",
+			"label": "rust: cargo flamegraph --open"
 		}
 	]
 }

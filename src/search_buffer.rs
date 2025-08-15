@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
-    hash::Hash,
+    hash::{BuildHasher, Hash, RandomState},
+    iter,
     ops::{Index, Range},
 };
 
@@ -8,40 +9,49 @@ use smallvec::SmallVec;
 
 use crate::Slide;
 
-pub struct SearchBuffer<T, const N: usize> {
+pub struct SearchBuffer<T, const N: usize, S = RandomState> {
     values: Slide<T>,
     offsets: Slide<usize>,
-    heads: HashMap<[T; N], usize>,
+    heads: HashMap<[T; N], usize, S>,
     offset: usize,
 }
-impl<T, const N: usize> Default for SearchBuffer<T, N> {
+impl<T, const N: usize, S: Default> Default for SearchBuffer<T, N, S> {
     fn default() -> Self {
-        Self {
-            values: Default::default(),
-            offsets: Default::default(),
-            heads: Default::default(),
-            offset: 1,
-        }
+        Self::with_hasher(S::default())
     }
 }
-impl<T: Copy + Eq + Hash, const N: usize> FromIterator<T> for SearchBuffer<T, N> {
+impl<T: Copy + Eq + Hash, const N: usize, S: Default + BuildHasher> FromIterator<T>
+    for SearchBuffer<T, N, S>
+{
     fn from_iter<Iter: IntoIterator<Item = T>>(iter: Iter) -> Self {
         let mut ret = Self::default();
         ret.extend(iter);
         ret
     }
 }
-impl<T: Copy + Eq + Hash, const N: usize> Extend<T> for SearchBuffer<T, N> {
+impl<T: Copy + Eq + Hash, const N: usize, S: BuildHasher> Extend<T> for SearchBuffer<T, N, S> {
     fn extend<Iter: IntoIterator<Item = T>>(&mut self, iter: Iter) {
         self.values.extend(iter);
         self.extend_offsets();
     }
 }
-
-impl<T: Copy + Eq + Hash, const N: usize> SearchBuffer<T, N> {
-    pub fn new() -> Self {
+impl<T, const N: usize, S> SearchBuffer<T, N, S> {
+    pub fn new() -> Self
+    where
+        S: Default,
+    {
         Self::default()
     }
+    pub fn with_hasher(hash_builder: S) -> Self {
+        Self {
+            values: Default::default(),
+            offsets: Default::default(),
+            heads: HashMap::with_hasher(hash_builder),
+            offset: 1,
+        }
+    }
+}
+impl<T: Copy + Eq + Hash, const N: usize, S: BuildHasher> SearchBuffer<T, N, S> {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -129,16 +139,24 @@ impl<T: Copy + Eq + Hash, const N: usize> SearchBuffer<T, N> {
         self.slide_from_within(index)
     }
     fn extend_offsets(&mut self) {
-        while let base = self.offsets.len()
-            && base < self.values.len()
-            && let Some(window) = self.values[base..].first_chunk_mut::<N>().copied()
-        {
-            self.offsets.push(
-                self.heads
-                    .insert(window, base + self.offset)
-                    .unwrap_or_default(),
-            );
-        }
+        let mut base = self.offsets.len();
+        let bases = SmallVec::<[_; 256]>::from_iter(iter::from_fn(|| {
+            if base < self.values.len()
+                && let Some(window) = self.values[base..].first_chunk_mut::<N>().copied()
+            {
+                let ret = Some((window, base));
+                base += 1;
+                ret
+            } else {
+                None
+            }
+        }));
+        let offsets = SmallVec::<[_; 256]>::from_iter(bases.into_iter().map(|(window, base)| {
+            self.heads
+                .insert(window, base + self.offset)
+                .unwrap_or_default()
+        }));
+        self.offsets.extend(offsets);
     }
     fn get_match<const SKIP_N: bool>(
         &self,
@@ -236,13 +254,13 @@ impl<T: Copy + Eq + Hash, const N: usize> SearchBuffer<T, N> {
     }
 }
 
-impl<T, const N: usize> Index<usize> for SearchBuffer<T, N> {
+impl<T, const N: usize, S> Index<usize> for SearchBuffer<T, N, S> {
     type Output = T;
     fn index(&self, index: usize) -> &Self::Output {
         &self.values[index + 1 - self.offset]
     }
 }
-impl<T, const N: usize> Index<Range<usize>> for SearchBuffer<T, N> {
+impl<T, const N: usize, S> Index<Range<usize>> for SearchBuffer<T, N, S> {
     type Output = [T];
     fn index(&self, index: Range<usize>) -> &Self::Output {
         &self.values[index.start + 1 - self.offset..index.end + 1 - self.offset]

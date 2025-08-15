@@ -2,7 +2,7 @@ mod slide;
 pub use slide::*;
 pub mod lz;
 pub mod search_buffer;
-pub(crate) mod util;
+pub mod util;
 
 #[cfg(test)]
 mod tests {

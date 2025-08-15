@@ -1,4 +1,8 @@
-use slide::lz::{Config, Item, from_items, to_items};
+use slide::{
+    Slide,
+    lz::{Config, Item},
+    search_buffer::SearchBuffer,
+};
 use std::{
     fs::File,
     io::{BufReader, Read},
@@ -21,14 +25,14 @@ fn main() {
     let mut len = 0;
 
     let items = Vec::from_iter(
-        to_items::<u8, { CONFIG.match_lengths.start }>(source.iter().copied(), CONFIG).inspect(
-            |item| {
+        SearchBuffer::<u8, { CONFIG.match_lengths.start }>::new()
+            .to_items(source.iter().copied(), CONFIG)
+            .inspect(|item| {
                 len += item.len();
                 if len % 0x10000 == 0 {
                     println!(">> {}% - ({len}/{end})", len as f64 * 100f64 / end as f64);
                 }
-            },
-        ),
+            }),
     );
     let encoded = Vec::from_iter(
         items
@@ -56,9 +60,7 @@ fn main() {
         }),
     );
     assert_eq!(items, items2);
-    let decoded = Vec::from_iter(from_items::<u8, { CONFIG.match_lengths.start }>(
-        items2, CONFIG,
-    ));
+    let decoded = Vec::from_iter(Slide::new().from_items(items2, CONFIG));
     assert!(source == decoded);
     println!();
     println!("----------------------");
