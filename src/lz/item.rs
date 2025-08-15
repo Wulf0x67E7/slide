@@ -132,24 +132,6 @@ mod tests {
     use super::*;
     use quickcheck_macros::quickcheck;
 
-    //#[test]
-    //fn fuzz_case() {
-    //    let items: Vec<Item<u8>> = Vec::from([
-    //        Item::Ref(10194334..10194431),
-    //        Item::Ref(0..10), // Ref with start == 0 caused error
-    //        Item::from([109, 111, 122, 105, 108, 108, 97]),
-    //        Item::Ref(17..139),
-    //    ]);
-    //    let items_encoded =
-    //        Vec::from_iter(items.iter().map(|item| postcard::to_stdvec(&item).unwrap()));
-    //    let items_decoded = Vec::from_iter(
-    //        items_encoded
-    //            .iter()
-    //            .map(|bytes| postcard::from_bytes::<Item<u8>>(bytes).unwrap()),
-    //    );
-    //    assert_eq!(items, items_decoded);
-    //}
-
     #[quickcheck]
     fn fuzz(index: Vec<Range<u8>>) {
         fn normalize(Range { start, end }: Range<u8>) -> Range<usize> {

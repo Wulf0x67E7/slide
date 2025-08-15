@@ -140,7 +140,12 @@ impl<T: Copy + Eq + Hash, const N: usize> SearchBuffer<T, N> {
             );
         }
     }
-    fn get_match<const SKIP_N: bool>(&self, base: usize, arr: &[T]) -> Range<usize> {
+    fn get_match<const SKIP_N: bool>(
+        &self,
+        base: usize,
+        arr: &[T],
+        min_len: usize,
+    ) -> Range<usize> {
         let skip = if SKIP_N {
             debug_assert!(
                 self.values[base..base + N]
@@ -155,20 +160,26 @@ impl<T: Copy + Eq + Hash, const N: usize> SearchBuffer<T, N> {
         let start = base + self.start();
         start
             ..start
-                + self.values[base..]
-                    .iter()
-                    .chain(arr)
-                    .copied()
-                    .zip(arr.iter().copied())
-                    .skip(skip)
-                    .take_while(|(a, b)| a == b)
-                    .count()
-                + skip
+                + if let Some(needle) = self.values.get(base + min_len)
+                    && needle == &arr[min_len]
+                {
+                    self.values[base..]
+                        .iter()
+                        .chain(arr)
+                        .copied()
+                        .zip(arr.iter().copied())
+                        .skip(skip)
+                        .take_while(|(a, b)| a == b)
+                        .count()
+                        + skip
+                } else {
+                    0
+                }
     }
     pub fn find_longest_match(&self, arr: &[T]) -> Option<Range<usize>> {
         let mut max = (self.len().saturating_sub(N)..self.len())
             .into_iter()
-            .map(|base| self.get_match::<false>(base, arr))
+            .map(|base| self.get_match::<false>(base, arr, 0))
             .max_by_key(Range::len)?;
         'ret: {
             let Some(mut next) = arr
@@ -179,7 +190,7 @@ impl<T: Copy + Eq + Hash, const N: usize> SearchBuffer<T, N> {
                 break 'ret;
             };
             while max.len() < arr.len() {
-                let candidate = self.get_match::<true>(next, arr);
+                let candidate = self.get_match::<true>(next, arr, max.len());
                 if candidate.len() > max.len() {
                     max = candidate;
                 }

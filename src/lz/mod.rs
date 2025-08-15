@@ -62,10 +62,10 @@ where
             }
             // Keep pushing/sliding in values popped of data until valid match is found.
             while let data @ [head, ..] = &match_window[raw_len..] {
+                debug_assert!(data.len() < config.match_lengths.end);
                 if let Some(range) = search_buffer.find_longest_match(data)
                     && range.len() >= config.match_lengths.start
                 {
-                    debug_assert!(range.len() < config.match_lengths.end);
                     back_ref = Some((range.clone(), search_buffer.end()));
                     search_buffer
                         .extend_slide(
@@ -96,9 +96,9 @@ pub fn from_items<T: Debug + Copy + Eq + Hash, const N: usize>(
                 buffer.extend(raw.into_iter());
             }
             Item::Ref { back, len } => {
-                assert!(usize::from(back) <= buffer.len());
-                assert!(len >= config.match_lengths.start);
-                assert!(
+                debug_assert!(usize::from(back) <= buffer.len());
+                debug_assert!(len >= config.match_lengths.start);
+                debug_assert!(
                     len < config.match_lengths.end,
                     "len {len} >= max_len {max_len}",
                     max_len = config.match_lengths.end
