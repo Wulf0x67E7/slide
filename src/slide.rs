@@ -3,6 +3,8 @@ use std::{
     ops::{Deref, DerefMut, Range},
 };
 
+use smallvec::SmallVec;
+
 pub struct Slide<T> {
     data: Box<[MaybeUninit<T>]>,
     start: usize,
@@ -157,6 +159,23 @@ impl<T> Slide<T> {
             }
             self.start = 0;
             self.end = len;
+        }
+    }
+    pub fn extend_from_within(&mut self, mut index: Range<usize>)
+    where
+        T: Copy,
+    {
+        assert!(
+            index.start < self.len(),
+            "The value of index.start ({index:?}) is out of bounds of the Slide ({len:?})",
+            len = self.len()
+        );
+        while !index.is_empty() {
+            let _index = index.start..index.end.min(self.len());
+            index.end -= _index.len();
+            self.extend(SmallVec::<[_; 256]>::from_iter(
+                self[_index].iter().copied(),
+            ));
         }
     }
 }

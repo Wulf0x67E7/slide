@@ -1,6 +1,8 @@
-use crate::{search_buffer::SearchBuffer, util::SliceExt as _};
-use std::{borrow::Cow, fmt::Debug, hash::Hash, iter, ops::Range};
-
+mod item;
+use crate::{Slide, search_buffer::SearchBuffer};
+pub use item::*;
+use smallvec::SmallVec;
+use std::{fmt::Debug, hash::Hash, iter, ops::Range, usize};
 #[derive(Debug)]
 pub struct Config {
     /// Maximum size of the search window. Default: 2^24
@@ -22,72 +24,17 @@ impl Default for Config {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum Item<'a, T>
-where
-    [T]: ToOwned,
-    <[T] as ToOwned>::Owned: Debug,
-{
-    Raw(Cow<'a, [T]>),
-    Ref(Range<usize>),
-}
-impl<T, const N: usize> From<[T; N]> for Item<'static, T>
-where
-    [T]: ToOwned,
-    <[T] as ToOwned>::Owned: Debug,
-{
-    fn from(value: [T; N]) -> Self {
-        Self::Raw(Cow::Owned(value.to_owned()))
-    }
-}
-impl<'a, T, const N: usize> From<&'a [T; N]> for Item<'a, T>
-where
-    [T]: ToOwned,
-    <[T] as ToOwned>::Owned: Debug,
-{
-    fn from(value: &'a [T; N]) -> Self {
-        Self::Raw(Cow::Borrowed(value))
-    }
-}
-impl<'a, T> From<&'a [T]> for Item<'a, T>
-where
-    [T]: ToOwned,
-    <[T] as ToOwned>::Owned: Debug,
-{
-    fn from(value: &'a [T]) -> Self {
-        Self::Raw(Cow::Borrowed(value))
-    }
-}
-impl<'a, T> From<Range<usize>> for Item<'a, T>
-where
-    [T]: ToOwned,
-    <[T] as ToOwned>::Owned: Debug,
-{
-    fn from(value: Range<usize>) -> Self {
-        Self::Ref(value)
-    }
-}
-impl<'a, T> Item<'a, T>
-where
-    [T]: ToOwned,
-    <[T] as ToOwned>::Owned: Debug,
-{
-    fn len(&self) -> usize {
-        match self {
-            Item::Raw(cow) => cow.len(),
-            Item::Ref(range) => range.len(),
-        }
-    }
-}
-
-pub fn to_back_refs<T: Debug + Copy + Eq + Hash, const N: usize>(
-    mut data: &[T],
+pub fn to_items<T: Debug + Copy + Eq + Hash, const N: usize>(
+    iter: impl IntoIterator<Item = T>,
     config: Config,
-) -> impl Iterator<Item = Item<'_, T>>
+) -> impl Iterator<Item = Item<T>>
 where
     [T]: ToOwned,
     <[T] as ToOwned>::Owned: Debug,
 {
+    let mut iter = iter.into_iter();
+    let mut match_window = Slide::new();
+
     let mut search_buffer = SearchBuffer::<T, N>::new();
     let mut raw_len: usize = 0;
     let mut back_ref: Option<Range<usize>> = None;
@@ -95,21 +42,30 @@ where
         loop {
             // Return items already found in previous call/iteration.
             if raw_len > 0 {
-                let item = Item::from(&data[..raw_len]);
-                data = &data[raw_len..];
+                let item = Item::Raw(Vec::from_iter(match_window.drain(0..raw_len)).into());
                 raw_len = 0;
                 return Some(item);
             } else if let Some(back_ref) = back_ref.take() {
-                data = &data[back_ref.len()..];
+                match_window.drain(0..back_ref.len()).for_each(drop);
                 return Some(Item::from(back_ref));
-            } else if data.is_empty() {
+            }
+            match_window.extend(
+                (&mut iter).take(
+                    config
+                        .match_lengths
+                        .end
+                        .saturating_sub(match_window.len() + 1),
+                ),
+            );
+            if match_window.is_empty() {
                 return None;
             }
             // Keep pushing/sliding in values popped of data until valid match is found.
-            while let data @ [head, ..] = data[raw_len..].get_clamped(0..config.match_lengths.end) {
+            while let data @ [head, ..] = &match_window[raw_len..] {
                 if let Some(range) = search_buffer.find_longest_match(data)
                     && range.len() >= config.match_lengths.start
                 {
+                    debug_assert!(range.len() < config.match_lengths.end);
                     search_buffer
                         .extend_slide(
                             data[..range.len()].into_iter().copied(),
@@ -120,6 +76,7 @@ where
                     break;
                 } else {
                     search_buffer.push_step(*head, config.max_buffer_len);
+                    iter.next().map(|val| match_window.push(val));
                     raw_len += 1;
                 }
             }
@@ -127,38 +84,48 @@ where
     })
 }
 
-pub fn from_back_refs<'a, T: 'a + Debug + Copy + Eq + Hash, const N: usize>(
-    items: impl IntoIterator<Item = Item<'a, T>>,
+pub fn from_items<T: Debug + Copy + Eq + Hash, const N: usize>(
+    items: impl IntoIterator<Item = Item<T>>,
     config: Config,
-) -> impl Iterator<Item = T> {
-    let mut search_buffer = SearchBuffer::<T, N>::new();
+) -> impl IntoIterator<Item = T> {
+    let mut buffer = Slide::<T>::new();
+    let mut base = 0;
     items.into_iter().flat_map(move |item| {
         let len = item.len();
         match item {
             Item::Raw(raw) => {
-                search_buffer
-                    .extend_slide(raw.into_owned(), config.max_buffer_len)
-                    .for_each(drop);
+                buffer.extend(raw.into_iter());
             }
             Item::Ref(index) => {
-                search_buffer
-                    .extend_slide_from_within(index, config.max_buffer_len)
-                    .for_each(drop);
+                assert!(len >= config.match_lengths.start);
+                assert!(
+                    len < config.match_lengths.end,
+                    "len {len} >= max_len {max_len}",
+                    max_len = config.match_lengths.end
+                );
+                buffer.extend_from_within(index.start - base..index.end - base);
             }
         };
-        search_buffer[search_buffer.end() - len..search_buffer.end()].to_owned()
+        let ret = SmallVec::<[T; 0x100]>::from(&buffer[buffer.len() - len..]);
+        let over = buffer.len().saturating_sub(config.max_buffer_len);
+        if over > 0 {
+            buffer.drain(0..over).for_each(drop);
+            base += over;
+        }
+        ret
     })
 }
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]
-    fn to_back_refs() {
+    fn to_items() {
         let data = b"vwabcdeabcabcabcxvw";
-        let items = super::to_back_refs::<_, 2>(
-            data,
+        let items = super::to_items::<_, 2>(
+            data.into_iter().copied(),
             Config {
                 max_buffer_len: 8,
                 match_lengths: 0..usize::MAX,
@@ -177,21 +144,38 @@ mod tests {
         );
     }
     #[test]
-    fn from_back_refs() {
+    fn from_items() {
         let items = [
             Item::from(b"vwabcde"),
             Item::from(2..5),
             Item::from(7..13),
             Item::from(b"xvw"),
         ];
-        let data = super::from_back_refs::<_, 2>(
+        let data = super::from_items::<_, 2>(
             items,
             Config {
                 max_buffer_len: 8,
                 match_lengths: 0..usize::MAX,
             },
         )
+        .into_iter()
         .collect::<Box<[_]>>();
         assert_eq!(data.iter().as_slice(), b"vwabcdeabcabcabcxvw".as_slice());
+    }
+    #[test]
+    fn serde_items() {
+        let bytes = [
+            0, 7, 118, 119, 97, 98, 99, 100, 101, 3, 3, 8, 6, 0, 3, 120, 118, 119,
+        ];
+        let items = [
+            Item::from(b"vwabcde"),
+            Item::from(2..5),
+            Item::from(7..13),
+            Item::from(b"xvw"),
+        ];
+        let bytes2 = postcard::to_stdvec(&items).unwrap();
+        let items2: [Item<u8>; 4] = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(items, items2);
+        assert_eq!(bytes.as_slice(), &bytes2);
     }
 }
