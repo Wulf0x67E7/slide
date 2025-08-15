@@ -37,7 +37,7 @@ where
 
     let mut search_buffer = SearchBuffer::<T, N>::new();
     let mut raw_len: usize = 0;
-    let mut back_ref: Option<Range<usize>> = None;
+    let mut back_ref: Option<(Range<usize>, usize)> = None;
     iter::from_fn(move || {
         loop {
             // Return items already found in previous call/iteration.
@@ -45,9 +45,9 @@ where
                 let item = Item::Raw(Vec::from_iter(match_window.drain(0..raw_len)).into());
                 raw_len = 0;
                 return Some(item);
-            } else if let Some(back_ref) = back_ref.take() {
-                match_window.drain(0..back_ref.len()).for_each(drop);
-                return Some(Item::from(back_ref));
+            } else if let Some((index, end)) = back_ref.take() {
+                match_window.drain(0..index.len()).for_each(drop);
+                return Some(Item::from((index, end)));
             }
             match_window.extend(
                 (&mut iter).take(
@@ -66,13 +66,13 @@ where
                     && range.len() >= config.match_lengths.start
                 {
                     debug_assert!(range.len() < config.match_lengths.end);
+                    back_ref = Some((range.clone(), search_buffer.end()));
                     search_buffer
                         .extend_slide(
                             data[..range.len()].into_iter().copied(),
                             config.max_buffer_len,
                         )
                         .for_each(drop);
-                    back_ref = Some(range);
                     break;
                 } else {
                     search_buffer.push_step(*head, config.max_buffer_len);
@@ -89,28 +89,28 @@ pub fn from_items<T: Debug + Copy + Eq + Hash, const N: usize>(
     config: Config,
 ) -> impl IntoIterator<Item = T> {
     let mut buffer = Slide::<T>::new();
-    let mut base = 0;
     items.into_iter().flat_map(move |item| {
         let len = item.len();
         match item {
             Item::Raw(raw) => {
                 buffer.extend(raw.into_iter());
             }
-            Item::Ref(index) => {
+            Item::Ref { back, len } => {
+                assert!(usize::from(back) <= buffer.len());
                 assert!(len >= config.match_lengths.start);
                 assert!(
                     len < config.match_lengths.end,
                     "len {len} >= max_len {max_len}",
                     max_len = config.match_lengths.end
                 );
-                buffer.extend_from_within(index.start - base..index.end - base);
+                let base = buffer.len() - usize::from(back);
+                buffer.extend_from_within(base..base + len);
             }
         };
         let ret = SmallVec::<[T; 0x100]>::from(&buffer[buffer.len() - len..]);
         let over = buffer.len().saturating_sub(config.max_buffer_len);
         if over > 0 {
             buffer.drain(0..over).for_each(drop);
-            base += over;
         }
         ret
     })
@@ -137,8 +137,8 @@ mod tests {
             items,
             vec![
                 Item::from(b"vwabcde"),
-                Item::from(2..5),
-                Item::from(7..13),
+                Item::from((2..5, 7)),
+                Item::from((7..13, 10)),
                 Item::from(b"xvw")
             ]
         );
@@ -147,8 +147,8 @@ mod tests {
     fn from_items() {
         let items = [
             Item::from(b"vwabcde"),
-            Item::from(2..5),
-            Item::from(7..13),
+            Item::from((2..5, 7)),
+            Item::from((7..13, 10)),
             Item::from(b"xvw"),
         ];
         let data = super::from_items::<_, 2>(
@@ -165,12 +165,12 @@ mod tests {
     #[test]
     fn serde_items() {
         let bytes = [
-            0, 7, 118, 119, 97, 98, 99, 100, 101, 3, 3, 8, 6, 0, 3, 120, 118, 119,
+            0, 7, 118, 119, 97, 98, 99, 100, 101, 5, 3, 3, 6, 0, 3, 120, 118, 119,
         ];
         let items = [
             Item::from(b"vwabcde"),
-            Item::from(2..5),
-            Item::from(7..13),
+            Item::from((2..5, 7)),
+            Item::from((7..13, 10)),
             Item::from(b"xvw"),
         ];
         let bytes2 = postcard::to_stdvec(&items).unwrap();

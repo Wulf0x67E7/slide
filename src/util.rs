@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::ops::Range;
 
 pub trait SliceExt<T> {
