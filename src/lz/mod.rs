@@ -35,6 +35,7 @@ impl<T: Copy + Eq + Hash, const N: usize, S: BuildHasher> SearchBuffer<T, N, S> 
         iter: impl IntoIterator<Item = T>,
         config: Config,
     ) -> impl Iterator<Item = Item<T>> {
+        assert!(N <= config.match_lengths.start);
         let mut iter = iter.into_iter();
         let mut match_window = Slide::new();
         let search_buffer = self;
@@ -65,9 +66,7 @@ impl<T: Copy + Eq + Hash, const N: usize, S: BuildHasher> SearchBuffer<T, N, S> 
                 // Keep pushing/sliding in values popped of data until valid match is found.
                 while let data @ [head, ..] = &match_window[raw_len..] {
                     debug_assert!(data.len() < config.match_lengths.end);
-                    if let Some(range) = search_buffer.find_longest_match(data)
-                        && range.len() >= config.match_lengths.start
-                    {
+                    if let Some(range) = search_buffer.find_longest_match(data) {
                         back_ref = Some((range.clone(), search_buffer.end()));
                         search_buffer
                             .extend_slide(
@@ -134,7 +133,7 @@ mod tests {
                 data.into_iter().copied(),
                 Config {
                     max_buffer_len: 8,
-                    match_lengths: 0..usize::MAX,
+                    match_lengths: 2..usize::MAX,
                 },
             )
             .take(5)

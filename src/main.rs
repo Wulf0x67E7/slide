@@ -12,7 +12,7 @@ use std::{
 fn main() {
     const CONFIG: Config = Config {
         max_buffer_len: 1 << 24,
-        match_lengths: 8..usize::MAX,
+        match_lengths: 4..usize::MAX,
     };
     let source = {
         let mut buf = vec![];

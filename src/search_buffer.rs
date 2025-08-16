@@ -163,42 +163,62 @@ impl<T: Copy + Eq + Hash, const N: usize, S: BuildHasher> SearchBuffer<T, N, S> 
         base: usize,
         arr: &[T],
         min_len: usize,
-    ) -> Range<usize> {
+    ) -> Option<Range<usize>> {
+        if min_len >= arr.len() || N >= arr.len() {
+            return None;
+        }
+        // check that [values[..], arr[..]][index] == arr[arr_index]
+        let check = |(index, arr_index): (usize, usize)| {
+            self.values
+                .get(index)
+                .or_else(|| arr.get(index - self.values.len()))
+                .and_then(|v| arr.get(arr_index).map(|a| (v, a)))
+                .is_some_and(|(a, b)| a == b)
+        };
+        // count how long [values[..], arr[..]][index] == arr[arr_base..]
+        let count = |(index, arr_base): (Range<usize>, usize)| {
+            index
+                .into_iter()
+                .zip(arr_base..)
+                .map(check)
+                .take_while(bool::clone)
+                .count()
+        };
         let skip = if SKIP_N {
-            debug_assert!(
-                self.values[base..base + N]
-                    .into_iter()
-                    .zip(&arr[..N])
-                    .all(|(a, b)| a == b)
-            );
+            debug_assert_eq!(count((base..base + N, 0)), N);
             N
         } else {
             0
         };
-        let start = base + self.start();
-        start
-            ..start
-                + if let Some(needle) = self.values.get(base + min_len)
-                    && needle == &arr[min_len]
-                {
-                    self.values[base..]
-                        .iter()
-                        .chain(arr)
-                        .copied()
-                        .zip(arr.iter().copied())
-                        .skip(skip)
-                        .take_while(|(a, b)| a == b)
-                        .count()
-                        + skip
-                } else {
-                    0
-                }
+        // If check at min_len doesn't exist or doesn't match, candidate must be shorter.
+        // We can therefore disregard it without a full count.
+        if check((base + min_len, min_len))
+            && let len = count((base + skip..usize::MAX, skip)) + skip
+            && len > min_len
+        {
+            let start = base + self.start();
+            Some(start..start + len)
+        } else {
+            None
+        }
     }
+
     pub fn find_longest_match(&self, arr: &[T]) -> Option<Range<usize>> {
+        self.find_longest_match_by(arr, |_max, _candidate| Ok(false))
+    }
+
+    pub fn find_longest_match_by(
+        &self,
+        arr: &[T],
+        mut predicate: impl FnMut(Option<Range<usize>>, Range<usize>) -> Result<bool, bool>,
+    ) -> Option<Range<usize>> {
+        if N >= arr.len() {
+            return None;
+        }
         let mut max = (self.len().saturating_sub(N)..self.len())
             .into_iter()
-            .map(|base| self.get_match::<false>(base, arr, 0))
-            .max_by_key(Range::len)?;
+            .flat_map(|base| self.get_match::<false>(base, arr, N))
+            .max_by_key(Range::len);
         'ret: {
             let Some(mut next) = arr
                 .first_chunk::<N>()
@@ -207,10 +227,23 @@ impl<T: Copy + Eq + Hash, const N: usize, S: BuildHasher> SearchBuffer<T, N, S> 
             else {
                 break 'ret;
             };
-            while max.len() < arr.len() {
-                let candidate = self.get_match::<true>(next, arr, max.len());
-                if candidate.len() > max.len() {
-                    max = candidate;
+            while let max_len = max.as_ref().map(Range::len).unwrap_or_default()
+                && max_len < arr.len()
+            {
+                if let Some(candidate) = self.get_match::<true>(next, arr, max_len) {
+                    match predicate(max.clone(), candidate.clone()) {
+                        Ok(done) => {
+                            max = Some(candidate);
+                            if done {
+                                break 'ret;
+                            }
+                        }
+                        Err(done) => {
+                            if done {
+                                break 'ret;
+                            }
+                        }
+                    }
                 }
                 let Some(_next) = self.offsets[next].checked_sub(self.offset) else {
                     break 'ret;
@@ -218,8 +251,8 @@ impl<T: Copy + Eq + Hash, const N: usize, S: BuildHasher> SearchBuffer<T, N, S> 
                 next = _next;
             }
         }
-        debug_assert!(max.len() <= arr.len());
-        (max.len() >= N).then_some(max)
+        debug_assert!(max.as_ref().map(Range::len).unwrap_or_default() <= arr.len());
+        max
     }
     pub fn push_from_within(&mut self, index: usize) {
         self.push(self[index]);
